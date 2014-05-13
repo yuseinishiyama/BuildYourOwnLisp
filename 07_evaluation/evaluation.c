@@ -26,6 +26,33 @@ void add_history(char* unused) {}
 
 #endif
 
+long eval_op(long x, char* op, long y) {
+  if (strcmp(op, "+") == 0) { return x + y; }
+  if (strcmp(op, "-") == 0) { return x - y; }
+  if (strcmp(op, "*") == 0) { return x * y; }
+  if (strcmp(op, "/") == 0) { return x / y; }
+  return 0;
+}
+
+long eval(mpc_ast_t* t) {
+  // 数値(終端子)であれば、数値化して返却。
+  if (strstr(t->tag, "number")) { return atoi(t->contents); }
+
+  // 演算子は2個めのトークン。
+  char* op = t->children[1]->contents;
+
+  // 左側のオペランドを評価。
+  long x = eval(t->children[2]);
+
+  int i = 3;
+  while (strstr(t->children[i]->tag, "expr")) {
+    x = eval_op(x, op, eval(t->children[i]));
+    i++;
+  }
+
+  return x; // 評価値。
+}
+
 int main(int argc, char** argv) {
   mpc_parser_t* Number = mpc_new("number");
   mpc_parser_t* Operator = mpc_new("operator");
@@ -49,7 +76,8 @@ lispy : /^/ <operator> <expr>+ /$/ ;            \
     add_history(input);
     mpc_result_t r;
     if (mpc_parse("<stdin>", input, Lispy, &r)) {
-      mpc_ast_print(r.output);
+      long result = eval(r.output); // 式を評価。
+      printf("%li\n", result);
       mpc_ast_delete(r.output);
     } else {
       mpc_err_print(r.error);
@@ -59,5 +87,6 @@ lispy : /^/ <operator> <expr>+ /$/ ;            \
   }
 
   mpc_cleanup(4, Number, Operator, Expr, Lispy);
+  
   return 0;
 }
