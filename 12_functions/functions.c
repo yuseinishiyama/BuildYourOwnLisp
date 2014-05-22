@@ -41,25 +41,27 @@ struct lval {
   char* sym; // シンボル名(型がシンボル)
 
   lbuiltin builtin; // 組み込み関数(型が関数)。
-  lenv* env;
-  lval* formals;
-  lval* body;
+  lenv* env; // ローカル環境。
+  lval* formals; // 仮引数。
+  lval* body; // 関数の実体。
   
   int count; // 子要素の数
   struct lval** cell; // 子要素の配列
 };
 
 struct lenv {
-  lenv* par;
-  int count;
-  char** syms;
-  lval** vals;
+  lenv* par; // 外側の環境
+  int count; // 定義された変数の数
+  char** syms; // 変数名の配列
+  lval** vals; // 値の配列
 };
 
 enum { LVAL_ERR, LVAL_NUM, LVAL_SYM, LVAL_FUN, LVAL_SEXPR, LVAL_QEXPR };
 enum { LERR_DIV_ZERO, LERR_BAD_OP, LERR_BAD_NUM };
 
-// コンストラクタ(lval)--->
+////////////////////////////////////////
+// lval
+////////////////////////////////////////
 
 // 数値型lvalの作成。
 lval* lval_num(long x) {
@@ -67,6 +69,15 @@ lval* lval_num(long x) {
   v->type = LVAL_NUM;
   v->num = x;
   return v;
+}
+
+lval* lval_err(char *fmt, ...);
+
+// 数値のバリデーションを行い、数値型のlvalを作成する。
+lval* lval_read_num(mpc_ast_t* t) {
+  errno = 0;
+  long x = strtol(t->contents, NULL, 10);
+  return errno != ERANGE ? lval_num(x) : lval_err("invalid number");
 }
 
 // エラー型lvalの作成。
@@ -115,7 +126,7 @@ lval* lval_qexpr(void) {
   return v;
 }
 
-// 関数型の作成。
+// ビルトイン関数の作成。
 lval* lval_fun(lbuiltin func) {
   lval* v = malloc(sizeof(lval));
   v->type = LVAL_FUN;
@@ -132,6 +143,7 @@ lval* lval_lambda(lval* formals, lval* body) {
 
   v->builtin = NULL;
 
+  // ローカル環境。
   v->env = lenv_new();
 
   v->formals = formals;
@@ -141,7 +153,6 @@ lval* lval_lambda(lval* formals, lval* body) {
 
 void lenv_del(lenv *e);
 
-// <--コンストラクタ(lval)
 // lvalのデストラクタ
 void lval_del(lval *v) {
   switch (v->type) {
@@ -216,19 +227,13 @@ lval* lval_copy(lval* v) {
   return x;
 }
 
-// 数値のバリデーション。
-lval* lval_read_num(mpc_ast_t* t) {
-  errno = 0;
-  long x = strtol(t->contents, NULL, 10);
-  return errno != ERANGE ? lval_num(x) : lval_err("invalid number");
-}
-
-// 抽象構文木を読み込み、S式を作成する。
+// 抽象構文木からlvalへマッピングする。
 lval* lval_read(mpc_ast_t* t) {
   if (strstr(t->tag, "number")) { return lval_read_num(t); }
   if (strstr(t->tag, "symbol")) { return lval_sym(t->contents); }
 
   lval* x = NULL;
+  // ??
   if (strcmp(t->tag, ">") == 0) { x = lval_sexpr(); }
   if (strstr(t->tag, "sexpr")) { x = lval_sexpr(); }
   if (strstr(t->tag, "qexpr")) { x = lval_qexpr(); }
@@ -294,6 +299,13 @@ lval* lval_pop(lval* v, int i) {
   return x;
 }
 
+// lvalの子要素から、特定のインデックスのものを取得し残りを削除する。
+lval* lval_take(lval* v, int i) {
+  lval* x = lval_pop(v, i);
+  lval_del(v);
+  return x;
+}
+
 // 2つのlvalをjoinする。
 lval* lval_join(lval* x, lval* y) {
   // yが空になるまで、yを先頭からpopしてxに追加し続ける。
@@ -303,13 +315,6 @@ lval* lval_join(lval* x, lval* y) {
 
   // yを削除。
   lval_del(y);
-  return x;
-}
-
-// lvalの子要素から、特定のインデックスのものを取得し残りを削除する。
-lval* lval_take(lval* v, int i) {
-  lval* x = lval_pop(v, i);
-  lval_del(v);
   return x;
 }
 
@@ -327,7 +332,6 @@ lval* lval_take(lval* v, int i) {
 #define LASSERT_TYPE(msg, val, ind, aType)               \
   LASSERT(val, (val->cell[ind]->type == aType), msg)    \
 
-
 // enumから型名。
 char* ltype_name(int t) {
   switch (t) {
@@ -341,26 +345,26 @@ char* ltype_name(int t) {
   }
 }
 
-// lval_evalとlval_eval_sexprは互いに呼び合うので、前方宣言する。
 lval* lval_eval(lenv* e, lval* v);
-
 lval* builtin(lenv *e, lval* a, char* func);
-
 lval* lval_call(lenv* e, lval* f, lval* a);
 
 // S式を評価。
 lval* lval_eval_sexpr(lenv* e, lval* v) {
   for (int i = 0; i < v->count; i++) {
+    // 子要素のS式を再帰的に評価。
     v->cell[i] = lval_eval(e, v->cell[i]);
   }
 
   for (int i = 0; i < v->count; i++) {
-    // エラーと評価されたものがあれば、残りの評価をせずにエラーを返す。
+    // エラーと評価されたものがあれば、残りの評価をせずにそのエラーを返す。
     if (v->cell[i]->type == LVAL_ERR) { return lval_take(v, i); }
   }
 
+  // 空のS式。
   if (v->count == 0) { return v; }
 
+  // 要素が１つのS式は、それを取り出す。
   if (v->count == 1) { return lval_take(v, 0); }
 
   // lvalから先頭要素を取得。
@@ -374,7 +378,7 @@ lval* lval_eval_sexpr(lenv* e, lval* v) {
     lval_del(f); lval_del(v);
   }
 
-  // 関数を実行し計算結果を取得
+  // 関数を実行し計算結果を取得。この時点でfは関数、vはその引数となっている。
   lval* result = lval_call(e, f, v);
 
   // fを破棄。
@@ -383,17 +387,16 @@ lval* lval_eval_sexpr(lenv* e, lval* v) {
 }
 
 void lenv_put(lenv* e, lval* k, lval* v);
-
 lval* builtin_eval(lenv *e, lval* a);
-
 lval* builtin_list(lenv *e, lval* a);
 
+// 関数適用。fは関数、aは実引数。
 lval* lval_call(lenv* e, lval* f, lval* a) {
   // ビルトイン関数であれば、そのまま関数ポインタを実行。
   if (f->builtin) { return f->builtin(e, a); }
 
-  int given = a->count;
-  int total = f->formals->count;
+  int given = a->count; // 実引数の数。
+  int total = f->formals->count; // 仮引数の数。
 
   while (a->count) {
     // 実引数が仮引数より多ければエラー。
@@ -401,48 +404,57 @@ lval* lval_call(lenv* e, lval* f, lval* a) {
       lval_del(a); return lval_err("Function passed too many arguments. Got %i, Expected %i.", given, total);
     }
 
-    // 一番目の仮引数。
+    // 先頭の仮引数。
     lval* sym = lval_pop(f->formals, 0);
     
-    // 可変長引数をとる場合。
+    // 仮引数に可変長引数を表すトークンが現れた場合。
     if (strcmp(sym->sym, "&") == 0) {
-      // &の後に引数が続かなければエラー。
+      // &の後に仮引数が続かなければエラー。
       if (f->formals->count != 1) {
         lval_del(a);
         return lval_err("Function format invalid. Symbol '&' not followed by single symbol.");
       }
-      
+
+      // &の後続のシンボルを取得。
       lval* nsym = lval_pop(f->formals, 0);
+      // 引数全てをリスト化し、それを関数の環境内で可変長仮引数のシンボルに束縛。
       lenv_put(f->env, nsym, builtin_list(e, a));
       lval_del(sym); lval_del(nsym);
-      break;
+      break; // 可変長引数より後にシンボルは続かないので、ループを抜ける。
     }
     
     // 一番目の実引数。
     lval* val = lval_pop(a, 0);
 
-    // 関数の環境にシンボルと値をコピー。
+    // 関数の環境内で仮引数のシンボルと実引数を束縛。
     lenv_put(f->env, sym, val);
 
     lval_del(sym); lval_del(val);
   }
 
   lval_del(a);
-  
+
+  // 評価されていない仮引数があり、かつ次の仮引数が&である場合。
+  // 可変長引数はオプションなので、指定されない場合を考慮する。
   if (f->formals->count > 0 &&
       strcmp(f->formals->cell[0]->sym, "&") == 0) {
+    // &の後には1つのシンボルが続く。
     if (f->formals->count != 2) {
       return lval_err("Function format invalid. Symbol '&' not followed by single symbol");
     }
     lval_del(lval_pop(f->formals, 0));
 
+    // &を削除。
     lval* sym = lval_pop(f->formals, 0);
+    // 空のリストを作成。
     lval* val = lval_qexpr();
 
+    // 可変長引数に空のリストを束縛する。
     lenv_put(f->env, sym, val);
     lval_del(sym); lval_del(val);
   }
-  
+
+  // それ以上仮引数が存在しない場合。
   if (f->formals->count == 0) {
     // 関数が評価される環境を、関数内の環境の親に設定。
     f->env->par = e;
@@ -454,12 +466,16 @@ lval* lval_call(lenv* e, lval* f, lval* a) {
   }
 }
 
+////////////////////////////////////////
+// lenv
+////////////////////////////////////////
 
 lval* lenv_get(lenv* e, lval* v);
 
 // lvalを評価。
 lval* lval_eval(lenv *e, lval* v) {
   if (v->type == LVAL_SYM) {
+    // シンボルの場合、環境から値を取得する。
     lval* x = lenv_get(e, v);
     lval_del(v);
     return x;
@@ -497,6 +513,7 @@ lval* lenv_get(lenv* e, lval* k) {
   }
 
   if (e->par) {
+    // 外側の環境を探索。
     return lenv_get(e->par, k);
   } else {
     // シンボルが見つからなければエラー。
@@ -529,6 +546,7 @@ void lenv_put(lenv* e, lval* k, lval* v) {
   strcpy(e->syms[e->count-1], k->sym);
 }
 
+// lenvのコピー。
 lenv* lenv_copy(lenv* e) {
   lenv* n = malloc(sizeof(lenv));
   n->par = e->par;
@@ -549,11 +567,11 @@ void lenv_def(lenv* e, lval* k, lval* v) {
   lenv_put(e, k, v);
 }
 
-//
+////////////////////////////////////////
 // 組み込み関数
-//
+////////////////////////////////////////
 
-// 組み込み関数head
+// 組み込み関数head。
 lval* builtin_head(lenv *e, lval* a) {
   // 引数が1つであること。
   LASSERT(a, (a->count == 1), "Function 'head' passed too many arguments. Got %i, Expected %i.", a->count, 1);
@@ -569,7 +587,7 @@ lval* builtin_head(lenv *e, lval* a) {
   return v;
 }
 
-// 組み込み関数tail
+// 組み込み関数tail。
 lval* builtin_tail(lenv *e, lval* a) {
   LASSERT(a, (a->count == 1), "Function 'tail' passed too many arguments!");
   LASSERT(a, (a->cell[0]->type == LVAL_QEXPR), "Function 'tail' passed incorrect types!");
@@ -581,14 +599,14 @@ lval* builtin_tail(lenv *e, lval* a) {
   return v;
 }
 
-// 組み込み関数list
+// 組み込み関数list。
 lval* builtin_list(lenv *e, lval* a) {
   // S式をリストに変換する。
   a->type = LVAL_QEXPR;
   return a;
 }
 
-// 組み込み関数eval
+// 組み込み関数eval。
 lval* builtin_eval(lenv *e, lval* a) {
   LASSERT(a, (a->count == 1), "Function 'eval' passed too many arguments!");
   LASSERT(a, (a->cell[0]->type == LVAL_QEXPR), "Function 'eval' passed incorrect type!");
@@ -599,7 +617,7 @@ lval* builtin_eval(lenv *e, lval* a) {
   return lval_eval(e, x);
 }
 
-// 組み込み関数join
+// 組み込み関数join。リストの連結。
 lval* builtin_join(lenv* e, lval* a) {
   for (int i = 0; i < a->count; i++) {
     LASSERT(a, (a->cell[i]->type == LVAL_QEXPR), "Function 'join' passed incorrect type.");
@@ -615,6 +633,7 @@ lval* builtin_join(lenv* e, lval* a) {
   return x;
 }
 
+// 組み込みラムダ式。
 lval* builtin_lamda(lenv* e, lval* a) {
   LASSERT_NUM("\\", a, 2);
   LASSERT_TYPE("\\", a, 0, LVAL_QEXPR);
@@ -673,60 +692,33 @@ lval* builtin_op(lenv* e, lval* a, char* op) {
   return x;
 }
 
-lval* builtin(lenv* e, lval* a, char* func) {
-  if (strcmp("list", func) == 0) { return builtin_list(e, a); }
-  if (strcmp("head", func) == 0) { return builtin_head(e, a); }
-  if (strcmp("tail", func) == 0) { return builtin_tail(e, a); }
-  if (strcmp("join", func) == 0) { return builtin_join(e, a); }
-  if (strcmp("eval", func) == 0) { return builtin_eval(e, a); }
-  if (strstr("+-/*", func)) { return builtin_op(e, a, func); }
-  lval_del(a);
-  return lval_err("Unknown Function!");
-}
-
 lval* builtin_add(lenv* e, lval* a) { return builtin_op(e, a, "+"); }
 lval* builtin_sub(lenv* e, lval* a) { return builtin_op(e, a, "-"); }
 lval* builtin_mul(lenv* e, lval* a) { return builtin_op(e, a, "*"); }
 lval* builtin_div(lenv* e, lval* a) { return builtin_op(e, a, "/"); }
 
-/* lval* builtin_def(lenv* e, lval* a) { */
-/*   LASSERT(a, (a->cell[0]->type == LVAL_QEXPR), "Function 'def' passed incorrect type!"); */
-
-/*   // 第一引数はシンボルのリスト。 */
-/*   lval* syms = a->cell[0]; */
-
-/*   for (int i = 0; i < syms->count; i++) { */
-/*     LASSERT(a, (syms->cell[i]->type == LVAL_SYM), "Function 'def' cannot define non-symbol"); */
-/*   } */
-
-/*   // 束縛対象の値とシンボルの数が同一であること。 */
-/*   LASSERT(a, (syms->count == a->count-1), "Function 'def' cannot define incorrect number of values to symbols"); */
-
-/*   for (int i = 0; i < syms->count; i++) { */
-/*     lenv_put(e, syms->cell[i], a->cell[i+1]); */
-/*   } */
-
-/*   lval_del(a); */
-/*   // 値の束縛に成功した場合、空のリストを返却。 */
-/*   return lval_sexpr(); */
-/* } */
-
+// 変数への値の代入。funcによって挙動を変える。
 lval* builtin_var(lenv* e, lval* a, char* func) {
   LASSERT_TYPE(func, a, 0, LVAL_QEXPR);
 
+  // 第1引数はシンボルのリスト。
   lval* syms = a->cell[0];
+  // 全ての要素がシンボルであるか確認。
   for (int i = 0; i < syms->count; i++) {
     LASSERT(a, (syms->cell[i]->type == LVAL_SYM),
             "Function ' %s' cannot define non-symbol. Got %s, Expected %s.",
             func, ltype_name(syms->cell[i]->type), ltype_name(LVAL_SYM));
   }
 
+  // シンボルの数と、値の数が同一か確認。
   LASSERT(a, (syms->count == a->count-1),
           "Function '%s' passed too many arguments for symbols. Got %i, Expected %i.",
           func, syms->count, a->count-1);
 
   for (int i = 0; i < syms->count; i++) {
+    // defはグローバル環境に、
     if (strcmp(func, "def") == 0) { lenv_def(e, syms->cell[i], a->cell[i+1]); }
+    // =はローカル環境に束縛。
     if (strcmp(func, "=") == 0) { lenv_put(e, syms->cell[i], a->cell[i+1]); }
   }
   lval_del(a);
@@ -764,6 +756,10 @@ void lenv_add_builtins(lenv* e) {
   lenv_add_builtin(e, "\\",  builtin_lamda);
 }
 
+////////////////////////////////////////
+// main
+////////////////////////////////////////
+
 int main(int argc, char** argv) {
   mpc_parser_t* Number = mpc_new("number");
   mpc_parser_t* Symbol = mpc_new("symbol");
@@ -772,6 +768,7 @@ int main(int argc, char** argv) {
   mpc_parser_t* Expr   = mpc_new("expr");
   mpc_parser_t* Lispy  = mpc_new("lispy");
 
+  // 字句解析の規則を設定。
   mpca_lang(MPCA_LANG_DEFAULT,
             "                                   \
 number   : /-?[0-9]+/ ;                                                 \
@@ -786,7 +783,9 @@ lispy    : /^/ <expr>* /$/ ;                                            \
   puts("Lispy Version 0.0.0.0.1");
   puts("Press Ctrl+c to Exit\n");
 
+  // グローバル環境を確保。
   lenv* e = lenv_new();
+  // 組み込み関数をグローバル環境にロード。
   lenv_add_builtins(e);
   
   while (1) {
@@ -794,6 +793,7 @@ lispy    : /^/ <expr>* /$/ ;                                            \
     add_history(input);
     mpc_result_t r;
 
+    // 入力をパース。
     if (mpc_parse("<stdin>", input, Lispy, &r)) {
       lval* x = lval_eval(e, lval_read(r.output));
       lval_println(x);
