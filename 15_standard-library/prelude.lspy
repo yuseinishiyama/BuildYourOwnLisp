@@ -1,0 +1,131 @@
+; Atoms
+(def {nil} {})
+(def {true} 1)
+(def {false} 0)
+
+; Function Definitions
+; (fun {name arguments} {body})
+(def {fun} (\ {f b} {
+     def (head f) (\ (tail f) b)
+}))
+
+; Pack List for Function
+(fun {pack f & xs} {f xs})
+
+; Unpack List for Function
+(fun {unpack f l} {
+     eval (join (list f) l)
+})
+
+; Curried and Uncurried calling
+(def {curry} unpack)
+(def {uncurry} pack)
+
+; Perform Several things in Sequence
+(fun {do & l} {
+     if (== l nil)
+     {nil}
+     {last l}
+})
+
+; Open new scope
+(fun {let b} {
+     ((\ {_} b) ())
+})
+
+; Logical Functions
+(fun {not x} {- 1 x})
+(fun {or x y} {+ x y})
+(fun {and x y} {* x y})
+
+; Miscellaneous Functions
+(fun {flip f a b} {f b a})
+(fun {ghost & xs} {eval xs})
+(fun {comp f g x} {f (g x)})
+
+; Function, Second, or Third Item in List
+(fun {fst l} { eval (head l)}) ; headはリストに内包された要素を返すので、それを評価することで中身を取り出している。
+(fun {snd l} { eval (head (tail l))} )
+(fun {trd l} { eval (head (tail (tail l))) })
+
+; List Length
+(fun {len l} {
+     if (== l nil)
+        {0}
+         {+ (len (tail l))}
+})
+
+; Nth item in List
+(fun {nth n l} {
+     if (== n 0)
+          {fst l}
+          {nth (- n 1) (tail l)}
+})
+
+; Last item in List
+(fun {last l} {nth (- (len l) l)})
+
+; Take N items
+(fun {take n l} {
+     if (== n 0)
+          {nil}
+          {join (head l) (take (- n 1) (tail l))}
+})
+
+; Drop N items
+(fun {drop n l} {
+     if (== n 0)
+        {l}
+        {drop (- n 1) (tail l)}
+})
+
+; Element of List
+(fun {elem x l} {
+     if (== l nil)
+        {false}
+        {if (== x (fst l)) {true} {elem x (tail l)}}
+})
+
+; Apply Function to List
+(fun {map f l} {
+     if (== l nil)
+        {nil}
+        {join (list (f (fst l))) (map f (tail l))}
+})
+
+; Apply Filter to List
+(fun {filter f l} {
+     if (== l nil)
+        {nil}
+        {join (if (f (fst l)) {head l} {nil}) (filter f (tail l))}
+})
+
+; Fold Left
+(fun {fold f z l} {
+     if (== l nil)
+        {z}
+        {fold f (f (fst l)) (tail l)}
+})
+
+; Selection
+(fun {select & cs} {
+     if (== cs nil)
+        {error "No Selection Found"}
+        {if (fst (fst cs)) {snd (fst cs)} {unpack select (tail cs)}}
+})
+(def {otherwise} true)
+
+; Case
+(fun {case x & cs} {
+     if (== cs nil)
+        {error "No Case Fonund"}
+        {if (== (fst (fst cs))) {snd (fst cs)} {unpack case (join (list x) (tail cs))}}
+})
+
+; Fibonacci
+(fun {fib n} {
+     select
+        { (== n 0) 0 }
+        { (== n 1) 1 }
+        { otherwise {+ (fib (- n 1)) (fib (- n 2))}}
+})
